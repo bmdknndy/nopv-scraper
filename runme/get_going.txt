@@ -1,0 +1,13 @@
+cd /Users/bradykennedy/Documents/GitHub/nopv-scraper
+
+pwd
+ls
+
+
+source .venv_clean/bin/activate
+
+python -m scraper.cli --help
+python -m scraper.cli scrape-batch --help
+
+ls runme
+
