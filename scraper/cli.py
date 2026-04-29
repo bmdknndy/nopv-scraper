@@ -5,11 +5,14 @@ import json
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Dict, List, Tuple
 
 import typer
 
+from scraper.config import DEFAULT_YEAR_END, DEFAULT_YEAR_START
 from scraper.fetch.browser_gate import fetch_pdf_via_browser, is_valid_pdf_payload
 from scraper.fetch.direct_http import fetch_pdf_direct
+from scraper.ops import dedupe_preserve_order, expand_bbls_to_tasks, read_bbls_from_csv
 from scraper.parse.nopv_extract import parse_nopv_pdf, record_to_dict
 from scraper.parse.pdf_classify import classify_pdf
 from scraper.storage.files import meta_path, pdf_path, write_meta, write_pdf
@@ -95,10 +98,6 @@ def _scrape_one(
     typer.echo(f"Headed mode: {headed}")
     typer.echo(f"Force overwrite: {force}")
 
-    typer.echo("\nCandidate URLs:")
-    typer.echo(f"- modern: {plan.modern_url}")
-    typer.echo(f"- legacy: {plan.legacy_url}")
-
     if print_plan:
         typer.echo("\nPlan JSON:")
         typer.echo(json.dumps(asdict(plan), indent=2))
@@ -106,13 +105,13 @@ def _scrape_one(
     pdf_file = pdf_path(plan.bbl, plan.stmt_date, plan.stmt_type)
     meta_file = meta_path(plan.bbl, plan.stmt_date, plan.stmt_type)
 
+    # Direct attempt (usually 406, but keep as optional first hop)
     typer.echo("\n🔎 Attempting direct HTTP fetch (modern URL)...")
     direct_result = fetch_pdf_direct(plan.modern_url)
 
     if direct_result.ok and is_valid_pdf_payload(direct_result.pdf_bytes, direct_result.content_type):
         write_pdf(pdf_file, direct_result.pdf_bytes, force=force)
         semantic = classify_pdf(pdf_file)
-
         write_meta(meta_file, {
             "status": "success",
             "strategy_used": "direct_http",
@@ -134,11 +133,7 @@ def _scrape_one(
             "semantic_page_count": semantic.page_count,
             "semantic_preview": semantic.text_preview,
         })
-
         typer.secho("\n✅ Download succeeded via direct HTTP.", fg=typer.colors.GREEN)
-        typer.echo(f"Saved PDF: {pdf_file}")
-        typer.echo(f"Saved metadata: {meta_file}")
-        typer.echo(f"Semantic classification: {semantic.status}")
         return 0, semantic.status
 
     typer.secho("\n⚠️ Direct fetch not usable; trying browser strategy.", fg=typer.colors.YELLOW)
@@ -181,7 +176,6 @@ def _scrape_one(
             "semantic_page_count": semantic.page_count,
             "semantic_preview": semantic.text_preview,
         })
-
         typer.secho("\n✅ Download succeeded via browser fallback.", fg=typer.colors.GREEN)
         typer.echo(f"Saved PDF: {pdf_file}")
         typer.echo(f"Saved metadata: {meta_file}")
@@ -208,18 +202,17 @@ def _scrape_one(
 
     typer.secho("\n❌ Browser fallback failed.", fg=typer.colors.RED)
     typer.echo(f"Reason: {browser_result.reason}")
-    typer.echo(f"Metadata saved: {meta_file}")
     return 1, "not_downloaded"
 
 
 @app.command("scrape-nopv")
 def scrape_nopv(
-    bbl: str = typer.Option(..., "--bbl", help="10-digit BBL, e.g. 1012530021"),
-    stmt_date: str = typer.Option(..., "--stmt-date", help="YYYYMMDD, e.g. 20260116"),
-    headed: bool = typer.Option(True, "--headed/--no-headed", help="Run browser headed for challenge workflows"),
-    force: bool = typer.Option(False, "--force/--no-force", help="Overwrite existing files"),
-    print_plan: bool = typer.Option(False, "--print-plan/--no-print-plan", help="Print computed URL plan"),
-    interactive_wait_ms: int = typer.Option(30_000, "--interactive-wait-ms", help="Wait window for manual challenge solve"),
+    bbl: str = typer.Option(..., "--bbl", help="10-digit BBL"),
+    stmt_date: str = typer.Option(..., "--stmt-date", help="YYYYMMDD"),
+    headed: bool = typer.Option(True, "--headed/--no-headed"),
+    force: bool = typer.Option(False, "--force/--no-force"),
+    print_plan: bool = typer.Option(False, "--print-plan/--no-print-plan"),
+    interactive_wait_ms: int = typer.Option(30_000, "--interactive-wait-ms"),
 ) -> None:
     code, semantic = _scrape_one(
         bbl=bbl,
@@ -236,11 +229,11 @@ def scrape_nopv(
 @app.command("scrape-batch")
 def scrape_batch(
     input_csv: str = typer.Option(..., "--input-csv", help="CSV with columns: bbl,stmt_date"),
-    headed: bool = typer.Option(True, "--headed/--no-headed", help="Use visible browser for challenge flow"),
-    force: bool = typer.Option(False, "--force/--no-force", help="Overwrite existing files"),
+    headed: bool = typer.Option(True, "--headed/--no-headed"),
+    force: bool = typer.Option(False, "--force/--no-force"),
     limit: int = typer.Option(0, "--limit", help="Process first N rows only (0 = all)"),
-    interactive_wait_ms: int = typer.Option(30_000, "--interactive-wait-ms", help="Wait window for manual challenge solve"),
-    print_plan: bool = typer.Option(False, "--print-plan/--no-print-plan", help="Print plan for each row"),
+    interactive_wait_ms: int = typer.Option(30_000, "--interactive-wait-ms"),
+    print_plan: bool = typer.Option(False, "--print-plan/--no-print-plan"),
 ) -> None:
     in_path = Path(input_csv)
     if not in_path.exists():
@@ -252,10 +245,7 @@ def scrape_batch(
         reader = csv.DictReader(f)
         expected = {"bbl", "stmt_date"}
         if not reader.fieldnames or not expected.issubset(set(reader.fieldnames)):
-            typer.secho(
-                f"❌ CSV must contain headers: bbl,stmt_date (got: {reader.fieldnames})",
-                fg=typer.colors.RED,
-            )
+            typer.secho(f"❌ CSV must contain headers: bbl,stmt_date", fg=typer.colors.RED)
             raise typer.Exit(code=2)
 
         for r in reader:
@@ -273,11 +263,7 @@ def scrape_batch(
         typer.secho("⚠️ No rows to process.", fg=typer.colors.YELLOW)
         raise typer.Exit(code=0)
 
-    success = 0
-    failed = 0
-    skipped = 0
-    no_data_found = 0
-    unreadable = 0
+    success = failed = skipped = no_data_found = unreadable = 0
     run_started = datetime.now(timezone.utc)
 
     for idx, row in enumerate(rows, start=1):
@@ -329,6 +315,76 @@ def scrape_batch(
     raise typer.Exit(code=1 if failed > 0 else 0)
 
 
+@app.command("scrape-bbl-batch")
+def scrape_bbl_batch(
+    input_csv: str = typer.Option(..., "--input-csv", help="CSV with ONLY a bbl column"),
+    year_start: int = typer.Option(DEFAULT_YEAR_START, "--year-start"),
+    year_end: int = typer.Option(DEFAULT_YEAR_END, "--year-end"),
+    headed: bool = typer.Option(True, "--headed/--no-headed"),
+    force: bool = typer.Option(False, "--force/--no-force"),
+    limit_tasks: int = typer.Option(0, "--limit-tasks", help="Limit expanded task count"),
+    interactive_wait_ms: int = typer.Option(30_000, "--interactive-wait-ms"),
+) -> None:
+    bbls = read_bbls_from_csv(Path(input_csv))
+    bbls = dedupe_preserve_order(bbls)
+    tasks = expand_bbls_to_tasks(bbls, year_start, year_end)
+
+    if limit_tasks > 0:
+        tasks = tasks[:limit_tasks]
+
+    typer.secho(f"BBL count: {len(bbls)}", fg=typer.colors.GREEN)
+    typer.secho(f"Expanded scrape tasks: {len(tasks)}", fg=typer.colors.GREEN)
+    typer.echo(f"Year range: {year_start}-{year_end}")
+
+    success = failed = skipped = no_data_found = unreadable = 0
+    run_started = datetime.now(timezone.utc)
+
+    for idx, (bbl, stmt_date, year) in enumerate(tasks, start=1):
+        typer.echo("\n" + "=" * 72)
+        typer.echo(f"[{idx}/{len(tasks)}] bbl={bbl} year={year} stmt_date={stmt_date}")
+
+        out_pdf = pdf_path(bbl, stmt_date, "NPV")
+        if out_pdf.exists() and not force:
+            b = out_pdf.read_bytes()
+            if is_valid_pdf_payload(b, content_type=""):
+                typer.secho(f"⏭️  Skipping existing valid PDF: {out_pdf}", fg=typer.colors.BLUE)
+                skipped += 1
+                continue
+
+        code, semantic = _scrape_one(
+            bbl=bbl,
+            stmt_date=stmt_date,
+            headed=headed,
+            force=force,
+            interactive_wait_ms=interactive_wait_ms,
+            print_plan=False,
+        )
+
+        if code == 0:
+            success += 1
+            if semantic == "no_data_found":
+                no_data_found += 1
+            elif semantic in {"unreadable_pdf", "empty_text"}:
+                unreadable += 1
+        else:
+            failed += 1
+
+    run_ended = datetime.now(timezone.utc)
+
+    typer.echo("\n" + "=" * 72)
+    typer.secho("BBL batch complete", fg=typer.colors.GREEN)
+    typer.echo(f"Started (UTC): {run_started.isoformat()}")
+    typer.echo(f"Ended   (UTC): {run_ended.isoformat()}")
+    typer.echo(f"Task total: {len(tasks)}")
+    typer.echo(f"Success:    {success}")
+    typer.echo(f"  ├─ no_data_found:   {no_data_found}")
+    typer.echo(f"  └─ unreadable/empty:{unreadable}")
+    typer.echo(f"Skipped:    {skipped}")
+    typer.echo(f"Failed:     {failed}")
+
+    raise typer.Exit(code=1 if failed > 0 else 0)
+
+
 @app.command("parse-nopv")
 def parse_nopv_cmd(
     pdf_path_arg: str = typer.Option(..., "--pdf-path", help="Path to one downloaded NOPV PDF"),
@@ -353,9 +409,9 @@ def parse_nopv_cmd(
 
 @app.command("parse-batch")
 def parse_batch_cmd(
-    raw_root: str = typer.Option("data/raw", "--raw-root", help="Root directory containing downloaded PDFs"),
-    out_dir: str = typer.Option("data/processed", "--out-dir", help="Output directory for parsed JSONL files"),
-    limit: int = typer.Option(0, "--limit", help="Process first N PDF files only (0 = all)"),
+    raw_root: str = typer.Option("data/raw", "--raw-root"),
+    out_dir: str = typer.Option("data/processed", "--out-dir"),
+    limit: int = typer.Option(0, "--limit"),
 ) -> None:
     raw = Path(raw_root)
     out = Path(out_dir)
@@ -373,10 +429,7 @@ def parse_batch_cmd(
     no_data_file = out / "nopv_no_data_found.jsonl"
     errors_file = out / "nopv_parse_errors.jsonl"
 
-    ok_count = 0
-    partial_count = 0
-    no_data_count = 0
-    failed_count = 0
+    ok_count = partial_count = no_data_count = failed_count = 0
 
     with records_file.open("w", encoding="utf-8") as f_records, \
          no_data_file.open("w", encoding="utf-8") as f_no_data, \
@@ -411,6 +464,63 @@ def parse_batch_cmd(
     typer.echo(f"Errors:      {errors_file}")
 
     raise typer.Exit(code=1 if failed_count > 0 else 0)
+
+
+@app.command("build-dataset-csv")
+def build_dataset_csv(
+    records_jsonl: str = typer.Option("data/processed/nopv_records.jsonl", "--records-jsonl"),
+    no_data_jsonl: str = typer.Option("data/processed/nopv_no_data_found.jsonl", "--no-data-jsonl"),
+    out_csv: str = typer.Option("data/processed/nopv_financials.csv", "--out-csv"),
+) -> None:
+    records_path = Path(records_jsonl)
+    no_data_path = Path(no_data_jsonl)
+    out_path = Path(out_csv)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    rows: List[Dict[str, Any]] = []
+
+    def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
+        if not path.exists():
+            return []
+        out = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line:
+                out.append(json.loads(line))
+        return out
+
+    recs = _load_jsonl(records_path)
+    nods = _load_jsonl(no_data_path)
+
+    rows.extend(recs)
+    rows.extend(nods)
+
+    # Normalize/derive tax_year
+    for r in rows:
+        sd = str(r.get("stmt_date") or "")
+        r["tax_year"] = int(sd[:4]) if len(sd) >= 4 and sd[:4].isdigit() else None
+
+    # clean financial CSV columns
+    cols = [
+        "bbl", "tax_year", "stmt_date", "semantic_status", "parse_status",
+        "market_value", "assessed_value", "taxable_value", "estimated_property_tax",
+        "estimated_gross_income", "estimated_expenses", "net_operating_income",
+        "base_cap_rate_percent", "overall_cap_rate_percent",
+        "market_value_source", "assessed_value_source", "taxable_value_source",
+        "estimated_property_tax_source", "estimated_gross_income_source",
+        "estimated_expenses_source", "net_operating_income_source",
+        "base_cap_rate_percent_source", "overall_cap_rate_percent_source",
+        "source_pdf_path", "parse_notes",
+    ]
+
+    with out_path.open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=cols)
+        w.writeheader()
+        for r in rows:
+            w.writerow({c: r.get(c) for c in cols})
+
+    typer.secho(f"✅ Wrote dataset CSV: {out_path}", fg=typer.colors.GREEN)
+    typer.echo(f"Rows: {len(rows)}")
 
 
 if __name__ == "__main__":
