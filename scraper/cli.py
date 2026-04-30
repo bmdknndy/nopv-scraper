@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import csv
 import json
+import shutil
+import time
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Set, Tuple
 
 import typer
 
@@ -87,6 +89,42 @@ def _append_task_manifest_row(manifest_path: Path, row: dict) -> None:
         if not file_exists:
             w.writeheader()
         w.writerow({k: row.get(k, "") for k in fieldnames})
+
+
+def _archive_manifest_if_exists(manifest_path: Path) -> None:
+    """If the manifest already exists, rename it with a timestamp suffix
+    so this run starts fresh. Pure file-system operation, never raises fatally."""
+    if not manifest_path.exists():
+        return
+    try:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        archived = manifest_path.with_name(f"{manifest_path.stem}_{ts}{manifest_path.suffix}")
+        shutil.move(str(manifest_path), str(archived))
+        typer.secho(f"📦 Archived prior manifest → {archived.name}", fg=typer.colors.CYAN)
+    except Exception as e:
+        typer.secho(f"⚠️  Could not archive prior manifest ({e}); will append instead.", fg=typer.colors.YELLOW)
+
+
+def _read_completed_tasks_from_manifest(manifest_path: Path) -> Set[Tuple[str, str]]:
+    """Returns a set of (bbl, stmt_date) tuples that have a successful row in the manifest.
+    Used by --resume mode. Returns empty set if the manifest does not exist or is unreadable."""
+    if not manifest_path.exists():
+        return set()
+    completed: Set[Tuple[str, str]] = set()
+    try:
+        with manifest_path.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                label = (row.get("status_label") or "").strip()
+                if label in {"success", "skipped", "retry_success"}:
+                    bbl = (row.get("bbl") or "").strip()
+                    sd = (row.get("stmt_date") or "").strip()
+                    if bbl and sd:
+                        completed.add((bbl, sd))
+    except Exception as e:
+        typer.secho(f"⚠️  Could not read manifest for resume ({e}); proceeding without resume.", fg=typer.colors.YELLOW)
+        return set()
+    return completed
 
 
 @app.command("hello")
@@ -240,26 +278,47 @@ def scrape_bbl_batch(
     interactive_wait_ms: int = typer.Option(30_000, "--interactive-wait-ms"),
     max_retries: int = typer.Option(2, "--max-retries"),
     manifest_csv: str = typer.Option("data/processed/task_status.csv", "--manifest-csv"),
+    throttle_ms: int = typer.Option(0, "--throttle-ms", help="Sleep N milliseconds between tasks (e.g. 1000 = 1 sec). Recommended for large runs."),
+    resume: bool = typer.Option(False, "--resume/--no-resume", help="Skip tasks already marked success/skipped in the manifest."),
+    archive_manifest: bool = typer.Option(False, "--archive-manifest/--no-archive-manifest", help="Rename existing manifest with timestamp before starting."),
 ) -> None:
     bbls = _dedupe_keep_order(_read_bbls_from_csv(Path(input_csv)))
     tasks = _expand_bbls_to_tasks(bbls, year_start, year_end)
     if limit_tasks > 0:
         tasks = tasks[:limit_tasks]
 
+    manifest_path = Path(manifest_csv)
+
+    # Optionally read prior completions for --resume BEFORE archiving
+    completed_keys: Set[Tuple[str, str]] = set()
+    if resume:
+        completed_keys = _read_completed_tasks_from_manifest(manifest_path)
+        if completed_keys:
+            typer.secho(f"↻ Resume mode: {len(completed_keys)} prior tasks will be skipped.", fg=typer.colors.CYAN)
+
+    # Optionally archive an existing manifest so this run starts fresh
+    if archive_manifest:
+        _archive_manifest_if_exists(manifest_path)
+
     typer.secho(f"BBL count: {len(bbls)}", fg=typer.colors.GREEN)
     typer.secho(f"Expanded tasks: {len(tasks)}", fg=typer.colors.GREEN)
     typer.echo(f"Year range: {year_start}-{year_end}")
 
-    # Pre-flight: check 2Captcha balance (warns if low, never raises)
-    check_2captcha_balance()
+    # Pre-flight: check 2Captcha balance
+    balance_start = check_2captcha_balance()
 
-    success = failed = skipped = no_data_found = unreadable = 0
+    success = failed = skipped = no_data_found = unreadable = resumed = 0
     run_started = datetime.now(timezone.utc)
-    manifest_path = Path(manifest_csv)
 
     for idx, (bbl, stmt_date, year) in enumerate(tasks, start=1):
         typer.echo("\n" + "=" * 72)
         typer.echo(f"[{idx}/{len(tasks)}] bbl={bbl} year={year} stmt_date={stmt_date}")
+
+        # Resume: skip if already completed in a prior run
+        if resume and (bbl, stmt_date) in completed_keys:
+            resumed += 1
+            typer.echo("↻ Already completed in a prior run. Skipping.")
+            continue
 
         out_pdf = pdf_path(bbl, stmt_date, "NPV")
         if out_pdf.exists() and not force:
@@ -282,6 +341,7 @@ def scrape_bbl_batch(
         last_code = 1
         last_semantic = "not_downloaded"
 
+        task_start = time.time()
         for attempt in range(1, max_retries + 2):
             typer.echo(f"Attempt {attempt}/{max_retries + 1}")
             code, semantic = _scrape_one(
@@ -296,6 +356,8 @@ def scrape_bbl_batch(
             last_semantic = semantic
             if code == 0:
                 break
+        task_elapsed = time.time() - task_start
+        typer.echo(f"  ⏱  Task time: {task_elapsed:.1f}s")
 
         if last_code == 0:
             success += 1
@@ -328,19 +390,32 @@ def scrape_bbl_batch(
                 "error_note": f"code={last_code}, semantic={last_semantic}",
             })
 
+        # Throttle between tasks if requested
+        if throttle_ms > 0 and idx < len(tasks):
+            time.sleep(throttle_ms / 1000.0)
+
     run_ended = datetime.now(timezone.utc)
+    elapsed_total = (run_ended - run_started).total_seconds()
 
     typer.echo("\n" + "=" * 72)
     typer.secho("BBL batch complete", fg=typer.colors.GREEN)
-    typer.echo(f"Started (UTC): {run_started.isoformat()}")
-    typer.echo(f"Ended   (UTC): {run_ended.isoformat()}")
-    typer.echo(f"Task total: {len(tasks)}")
-    typer.echo(f"Success:    {success}")
-    typer.echo(f"  ├─ no_data_found:   {no_data_found}")
-    typer.echo(f"  └─ unreadable/empty:{unreadable}")
-    typer.echo(f"Skipped:    {skipped}")
-    typer.echo(f"Failed:     {failed}")
-    typer.echo(f"Manifest:   {manifest_path}")
+    typer.echo(f"Started (UTC):  {run_started.isoformat()}")
+    typer.echo(f"Ended   (UTC):  {run_ended.isoformat()}")
+    typer.echo(f"Wall time:      {elapsed_total/60:.1f} min ({elapsed_total:.0f}s)")
+    typer.echo(f"Task total:     {len(tasks)}")
+    typer.echo(f"Success:        {success}")
+    typer.echo(f"  ├─ no_data_found:    {no_data_found}")
+    typer.echo(f"  └─ unreadable/empty: {unreadable}")
+    typer.echo(f"Skipped (file): {skipped}")
+    typer.echo(f"Resumed (skip): {resumed}")
+    typer.echo(f"Failed:         {failed}")
+    typer.echo(f"Manifest:       {manifest_path}")
+
+    # End-of-run balance check (so you can see what was spent)
+    balance_end = check_2captcha_balance()
+    if balance_start is not None and balance_end is not None:
+        spent = balance_start - balance_end
+        typer.echo(f"2Captcha spent: ${spent:.4f}")
 
     raise typer.Exit(code=1 if failed > 0 else 0)
 
