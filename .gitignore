@@ -182,7 +182,7 @@ cython_debug/
 
 # Data
 data/raw/
-runme/get_going.txt/
+runme/
 
 # venv
 .venv/
@@ -198,4 +198,4 @@ playwright/.cache/
 # Secrets — never commit
 .env
 *.env
-set_env.sh # or whatever the offending filename is
+set_env.sh 
