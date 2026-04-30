@@ -39,6 +39,32 @@ def is_valid_pdf_payload(body: bytes, content_type: str) -> bool:
 _POLL_INTERVAL_MS = 500
 
 
+def check_2captcha_balance(warn_below: float = 1.0) -> Optional[float]:
+    """
+    Returns current 2Captcha account balance in USD, or None if unavailable.
+    Prints a warning if balance is below `warn_below` (default $1.00).
+    Safe to call before a batch run; never raises.
+    """
+    api_key = os.environ.get("TWOCAPTCHA_API_KEY")
+    if not api_key:
+        print("ℹ️  2Captcha: TWOCAPTCHA_API_KEY not set — auto-solve disabled.")
+        return None
+    if not _TWOCAPTCHA_AVAILABLE:
+        print("ℹ️  2Captcha: twocaptcha package not installed — auto-solve disabled.")
+        return None
+    try:
+        solver = TwoCaptcha(api_key)
+        balance = float(solver.balance())
+        if balance < warn_below:
+            print(f"⚠️  2Captcha balance is LOW: ${balance:.4f}. Top up before scaling.")
+        else:
+            print(f"✓ 2Captcha balance: ${balance:.4f}")
+        return balance
+    except Exception as e:
+        print(f"ℹ️  2Captcha balance check failed (continuing anyway): {e}")
+        return None
+
+
 def _try_solve_recaptcha_via_2captcha(page, page_url: str) -> bool:
     """
     Attempts to auto-solve a reCAPTCHA v2 on the current page using 2Captcha.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -7,6 +8,10 @@ from typing import Optional
 
 from pypdf import PdfReader
 from scraper.parse.pdf_classify import classify_pdf
+
+# Silence pypdf's noisy "Ignoring wrong pointing object" warnings.
+# These are cosmetic and do not affect parsing behavior.
+logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 
 # ----------------------------
