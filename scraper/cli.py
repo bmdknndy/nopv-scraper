@@ -9,16 +9,84 @@ from typing import Any, Dict, List, Tuple
 
 import typer
 
-from scraper.config import DEFAULT_YEAR_END, DEFAULT_YEAR_START
-from scraper.fetch.browser_gate import fetch_pdf_via_browser, is_valid_pdf_payload
+from scraper.fetch.browser_gate3 import fetch_pdf_via_browser, is_valid_pdf_payload
 from scraper.fetch.direct_http import fetch_pdf_direct
-from scraper.ops import dedupe_preserve_order, expand_bbls_to_tasks, read_bbls_from_csv
 from scraper.parse.nopv_extract import parse_nopv_pdf, record_to_dict
 from scraper.parse.pdf_classify import classify_pdf
 from scraper.storage.files import meta_path, pdf_path, write_meta, write_pdf
 from scraper.url_builder import build_nopv_url_plan
 
 app = typer.Typer(help="NYC DOF NOPV scraper v2 CLI", no_args_is_help=True)
+
+DEFAULT_YEAR_START = 2017
+DEFAULT_YEAR_END = 2026
+YEAR_TO_STMT_DATE = {
+    2017: "20170115",
+    2018: "20180115",
+    2019: "20190115",
+    2020: "20200115",
+    2021: "20210115",
+    2022: "20220115",
+    2023: "20230115",
+    2024: "20240115",
+    2025: "20250115",
+    2026: "20260116",
+}
+
+
+def _read_bbls_from_csv(path: Path) -> List[str]:
+    if not path.exists():
+        raise FileNotFoundError(f"CSV not found: {path}")
+    with path.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames or "bbl" not in reader.fieldnames:
+            raise ValueError(f"CSV must contain 'bbl' column, got: {reader.fieldnames}")
+        out = []
+        for row in reader:
+            bbl = (row.get("bbl") or "").strip()
+            if bbl:
+                out.append(bbl)
+        return out
+
+
+def _dedupe_keep_order(items: List[str]) -> List[str]:
+    seen = set()
+    out = []
+    for x in items:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
+def _expand_bbls_to_tasks(bbls: List[str], year_start: int, year_end: int) -> List[Tuple[str, str, int]]:
+    tasks = []
+    for bbl in bbls:
+        for y in range(year_start, year_end + 1):
+            stmt = YEAR_TO_STMT_DATE.get(y, f"{y}0115")
+            tasks.append((bbl, stmt, y))
+    return tasks
+
+
+def _append_task_manifest_row(manifest_path: Path, row: dict) -> None:
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    file_exists = manifest_path.exists()
+    fieldnames = [
+        "run_started_utc",
+        "bbl",
+        "stmt_date",
+        "year",
+        "attempt",
+        "result_code",
+        "semantic_status",
+        "status_label",
+        "error_note",
+    ]
+    with manifest_path.open("a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        if not file_exists:
+            w.writeheader()
+        w.writerow({k: row.get(k, "") for k in fieldnames})
 
 
 @app.command("hello")
@@ -27,9 +95,7 @@ def hello() -> None:
 
 
 @app.command("verify-pdf")
-def verify_pdf(
-    path: str = typer.Option(..., "--path", help="Path to a downloaded PDF to validate")
-) -> None:
+def verify_pdf(path: str = typer.Option(..., "--path")) -> None:
     p = Path(path)
     if not p.exists():
         typer.secho(f"❌ File not found: {p}", fg=typer.colors.RED)
@@ -46,18 +112,11 @@ def verify_pdf(
     typer.echo(f"Looks like HTML: {looks_html}")
     typer.echo(f"is_valid_pdf_payload: {looks_valid}")
 
-    if looks_valid:
-        typer.secho("✅ PDF validation passed.", fg=typer.colors.GREEN)
-        raise typer.Exit(code=0)
-
-    typer.secho("❌ Invalid PDF payload.", fg=typer.colors.RED)
-    raise typer.Exit(code=1)
+    raise typer.Exit(code=0 if looks_valid else 1)
 
 
 @app.command("classify-pdf")
-def classify_pdf_cmd(
-    path: str = typer.Option(..., "--path", help="Path to downloaded PDF")
-) -> None:
+def classify_pdf_cmd(path: str = typer.Option(..., "--path")) -> None:
     p = Path(path)
     result = classify_pdf(p)
 
@@ -72,8 +131,7 @@ def classify_pdf_cmd(
         raise typer.Exit(code=0)
     elif result.status == "no_data_found":
         raise typer.Exit(code=3)
-    else:
-        raise typer.Exit(code=1)
+    raise typer.Exit(code=1)
 
 
 def _scrape_one(
@@ -90,25 +148,13 @@ def _scrape_one(
         typer.secho(f"Input error: {e}", fg=typer.colors.RED, err=True)
         return 2, "not_downloaded"
 
-    typer.secho("✅ Input validated", fg=typer.colors.GREEN)
-    typer.echo(f"BBL: {plan.bbl}")
-    typer.echo(f"Statement date: {plan.stmt_date}")
-    typer.echo(f"Year: {plan.year}")
-    typer.echo(f"Preferred strategy: {plan.preferred_strategy}")
-    typer.echo(f"Headed mode: {headed}")
-    typer.echo(f"Force overwrite: {force}")
-
     if print_plan:
-        typer.echo("\nPlan JSON:")
         typer.echo(json.dumps(asdict(plan), indent=2))
 
     pdf_file = pdf_path(plan.bbl, plan.stmt_date, plan.stmt_type)
     meta_file = meta_path(plan.bbl, plan.stmt_date, plan.stmt_type)
 
-    # Direct attempt (usually 406, but keep as optional first hop)
-    typer.echo("\n🔎 Attempting direct HTTP fetch (modern URL)...")
     direct_result = fetch_pdf_direct(plan.modern_url)
-
     if direct_result.ok and is_valid_pdf_payload(direct_result.pdf_bytes, direct_result.content_type):
         write_pdf(pdf_file, direct_result.pdf_bytes, force=force)
         semantic = classify_pdf(pdf_file)
@@ -117,33 +163,15 @@ def _scrape_one(
             "strategy_used": "direct_http",
             "bbl": plan.bbl,
             "stmt_date": plan.stmt_date,
-            "stmt_type": plan.stmt_type,
             "year": plan.year,
             "url_attempted": plan.modern_url,
-            "legacy_url": plan.legacy_url,
-            "http_status": direct_result.status_code,
-            "content_type": direct_result.content_type,
             "reason": direct_result.reason,
             "pdf_path": str(pdf_file),
-            "headed_requested": headed,
-            "force": force,
             "semantic_status": semantic.status,
-            "semantic_no_data_patterns": semantic.matched_no_data_patterns,
-            "semantic_nopv_patterns": semantic.matched_nopv_patterns,
-            "semantic_page_count": semantic.page_count,
-            "semantic_preview": semantic.text_preview,
         })
-        typer.secho("\n✅ Download succeeded via direct HTTP.", fg=typer.colors.GREEN)
         return 0, semantic.status
 
-    typer.secho("\n⚠️ Direct fetch not usable; trying browser strategy.", fg=typer.colors.YELLOW)
-    typer.echo(f"Direct reason: {direct_result.reason}")
-
     browser_target_url = plan.legacy_url if plan.year < 2020 else plan.modern_url
-    typer.echo("🌐 Browser fetch starting...")
-    typer.echo(f"Target URL: {browser_target_url}")
-    typer.echo("If challenge appears, solve it in the browser window.")
-
     browser_result = fetch_pdf_via_browser(
         browser_target_url,
         headed=headed,
@@ -153,33 +181,17 @@ def _scrape_one(
     if browser_result.ok:
         write_pdf(pdf_file, browser_result.pdf_bytes, force=force)
         semantic = classify_pdf(pdf_file)
-
         write_meta(meta_file, {
             "status": "success",
             "strategy_used": "browser_gate",
             "bbl": plan.bbl,
             "stmt_date": plan.stmt_date,
-            "stmt_type": plan.stmt_type,
             "year": plan.year,
-            "modern_url": plan.modern_url,
-            "legacy_url": plan.legacy_url,
-            "direct_reason": direct_result.reason,
             "url_attempted": browser_result.final_url or browser_target_url,
-            "content_type": browser_result.content_type,
-            "browser_reason": browser_result.reason,
+            "reason": browser_result.reason,
             "pdf_path": str(pdf_file),
-            "headed_requested": headed,
-            "force": force,
             "semantic_status": semantic.status,
-            "semantic_no_data_patterns": semantic.matched_no_data_patterns,
-            "semantic_nopv_patterns": semantic.matched_nopv_patterns,
-            "semantic_page_count": semantic.page_count,
-            "semantic_preview": semantic.text_preview,
         })
-        typer.secho("\n✅ Download succeeded via browser fallback.", fg=typer.colors.GREEN)
-        typer.echo(f"Saved PDF: {pdf_file}")
-        typer.echo(f"Saved metadata: {meta_file}")
-        typer.echo(f"Semantic classification: {semantic.status}")
         return 0, semantic.status
 
     write_meta(meta_file, {
@@ -187,28 +199,19 @@ def _scrape_one(
         "strategy_used": "direct_then_browser_failed",
         "bbl": plan.bbl,
         "stmt_date": plan.stmt_date,
-        "stmt_type": plan.stmt_type,
         "year": plan.year,
-        "modern_url": plan.modern_url,
-        "legacy_url": plan.legacy_url,
         "direct_reason": direct_result.reason,
-        "direct_http_status": direct_result.status_code,
         "browser_reason": browser_result.reason,
         "browser_final_url": browser_result.final_url,
-        "headed_requested": headed,
-        "force": force,
         "semantic_status": "not_downloaded",
     })
-
-    typer.secho("\n❌ Browser fallback failed.", fg=typer.colors.RED)
-    typer.echo(f"Reason: {browser_result.reason}")
     return 1, "not_downloaded"
 
 
 @app.command("scrape-nopv")
 def scrape_nopv(
-    bbl: str = typer.Option(..., "--bbl", help="10-digit BBL"),
-    stmt_date: str = typer.Option(..., "--stmt-date", help="YYYYMMDD"),
+    bbl: str = typer.Option(..., "--bbl"),
+    stmt_date: str = typer.Option(..., "--stmt-date"),
     headed: bool = typer.Option(True, "--headed/--no-headed"),
     force: bool = typer.Option(False, "--force/--no-force"),
     print_plan: bool = typer.Option(False, "--print-plan/--no-print-plan"),
@@ -226,118 +229,30 @@ def scrape_nopv(
     raise typer.Exit(code=code)
 
 
-@app.command("scrape-batch")
-def scrape_batch(
-    input_csv: str = typer.Option(..., "--input-csv", help="CSV with columns: bbl,stmt_date"),
-    headed: bool = typer.Option(True, "--headed/--no-headed"),
-    force: bool = typer.Option(False, "--force/--no-force"),
-    limit: int = typer.Option(0, "--limit", help="Process first N rows only (0 = all)"),
-    interactive_wait_ms: int = typer.Option(30_000, "--interactive-wait-ms"),
-    print_plan: bool = typer.Option(False, "--print-plan/--no-print-plan"),
-) -> None:
-    in_path = Path(input_csv)
-    if not in_path.exists():
-        typer.secho(f"❌ Input CSV not found: {in_path}", fg=typer.colors.RED)
-        raise typer.Exit(code=2)
-
-    rows = []
-    with in_path.open("r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        expected = {"bbl", "stmt_date"}
-        if not reader.fieldnames or not expected.issubset(set(reader.fieldnames)):
-            typer.secho(f"❌ CSV must contain headers: bbl,stmt_date", fg=typer.colors.RED)
-            raise typer.Exit(code=2)
-
-        for r in reader:
-            bbl = (r.get("bbl") or "").strip()
-            stmt_date = (r.get("stmt_date") or "").strip()
-            if bbl and stmt_date:
-                rows.append({"bbl": bbl, "stmt_date": stmt_date})
-
-    if limit > 0:
-        rows = rows[:limit]
-
-    total = len(rows)
-    typer.echo(f"Loaded {total} rows from {in_path}")
-    if total == 0:
-        typer.secho("⚠️ No rows to process.", fg=typer.colors.YELLOW)
-        raise typer.Exit(code=0)
-
-    success = failed = skipped = no_data_found = unreadable = 0
-    run_started = datetime.now(timezone.utc)
-
-    for idx, row in enumerate(rows, start=1):
-        bbl = row["bbl"]
-        stmt_date = row["stmt_date"]
-
-        typer.echo("\n" + "=" * 72)
-        typer.echo(f"[{idx}/{total}] bbl={bbl} stmt_date={stmt_date}")
-
-        out_pdf = pdf_path(bbl, stmt_date, "NPV")
-        if out_pdf.exists() and not force:
-            b = out_pdf.read_bytes()
-            if is_valid_pdf_payload(b, content_type=""):
-                typer.secho(f"⏭️  Skipping existing valid PDF: {out_pdf}", fg=typer.colors.BLUE)
-                skipped += 1
-                continue
-
-        code, semantic = _scrape_one(
-            bbl=bbl,
-            stmt_date=stmt_date,
-            headed=headed,
-            force=force,
-            interactive_wait_ms=interactive_wait_ms,
-            print_plan=print_plan,
-        )
-
-        if code == 0:
-            success += 1
-            if semantic == "no_data_found":
-                no_data_found += 1
-            elif semantic in {"unreadable_pdf", "empty_text"}:
-                unreadable += 1
-        else:
-            failed += 1
-
-    run_ended = datetime.now(timezone.utc)
-
-    typer.echo("\n" + "=" * 72)
-    typer.secho("Batch complete", fg=typer.colors.GREEN)
-    typer.echo(f"Started (UTC): {run_started.isoformat()}")
-    typer.echo(f"Ended   (UTC): {run_ended.isoformat()}")
-    typer.echo(f"Total:   {total}")
-    typer.echo(f"Success (downloaded): {success}")
-    typer.echo(f"  ├─ no_data_found:   {no_data_found}")
-    typer.echo(f"  └─ unreadable/empty:{unreadable}")
-    typer.echo(f"Skipped: {skipped}")
-    typer.echo(f"Failed:  {failed}")
-
-    raise typer.Exit(code=1 if failed > 0 else 0)
-
-
 @app.command("scrape-bbl-batch")
 def scrape_bbl_batch(
-    input_csv: str = typer.Option(..., "--input-csv", help="CSV with ONLY a bbl column"),
+    input_csv: str = typer.Option(..., "--input-csv", help="CSV with ONLY bbl column"),
     year_start: int = typer.Option(DEFAULT_YEAR_START, "--year-start"),
     year_end: int = typer.Option(DEFAULT_YEAR_END, "--year-end"),
     headed: bool = typer.Option(True, "--headed/--no-headed"),
     force: bool = typer.Option(False, "--force/--no-force"),
-    limit_tasks: int = typer.Option(0, "--limit-tasks", help="Limit expanded task count"),
+    limit_tasks: int = typer.Option(0, "--limit-tasks"),
     interactive_wait_ms: int = typer.Option(30_000, "--interactive-wait-ms"),
+    max_retries: int = typer.Option(2, "--max-retries"),
+    manifest_csv: str = typer.Option("data/processed/task_status.csv", "--manifest-csv"),
 ) -> None:
-    bbls = read_bbls_from_csv(Path(input_csv))
-    bbls = dedupe_preserve_order(bbls)
-    tasks = expand_bbls_to_tasks(bbls, year_start, year_end)
-
+    bbls = _dedupe_keep_order(_read_bbls_from_csv(Path(input_csv)))
+    tasks = _expand_bbls_to_tasks(bbls, year_start, year_end)
     if limit_tasks > 0:
         tasks = tasks[:limit_tasks]
 
     typer.secho(f"BBL count: {len(bbls)}", fg=typer.colors.GREEN)
-    typer.secho(f"Expanded scrape tasks: {len(tasks)}", fg=typer.colors.GREEN)
+    typer.secho(f"Expanded tasks: {len(tasks)}", fg=typer.colors.GREEN)
     typer.echo(f"Year range: {year_start}-{year_end}")
 
     success = failed = skipped = no_data_found = unreadable = 0
     run_started = datetime.now(timezone.utc)
+    manifest_path = Path(manifest_csv)
 
     for idx, (bbl, stmt_date, year) in enumerate(tasks, start=1):
         typer.echo("\n" + "=" * 72)
@@ -347,27 +262,68 @@ def scrape_bbl_batch(
         if out_pdf.exists() and not force:
             b = out_pdf.read_bytes()
             if is_valid_pdf_payload(b, content_type=""):
-                typer.secho(f"⏭️  Skipping existing valid PDF: {out_pdf}", fg=typer.colors.BLUE)
                 skipped += 1
+                _append_task_manifest_row(manifest_path, {
+                    "run_started_utc": run_started.isoformat(),
+                    "bbl": bbl,
+                    "stmt_date": stmt_date,
+                    "year": year,
+                    "attempt": 0,
+                    "result_code": 0,
+                    "semantic_status": "skipped_existing",
+                    "status_label": "skipped",
+                    "error_note": "",
+                })
                 continue
 
-        code, semantic = _scrape_one(
-            bbl=bbl,
-            stmt_date=stmt_date,
-            headed=headed,
-            force=force,
-            interactive_wait_ms=interactive_wait_ms,
-            print_plan=False,
-        )
+        last_code = 1
+        last_semantic = "not_downloaded"
 
-        if code == 0:
+        for attempt in range(1, max_retries + 2):
+            typer.echo(f"Attempt {attempt}/{max_retries + 1}")
+            code, semantic = _scrape_one(
+                bbl=bbl,
+                stmt_date=stmt_date,
+                headed=headed,
+                force=force,
+                interactive_wait_ms=interactive_wait_ms,
+                print_plan=False,
+            )
+            last_code = code
+            last_semantic = semantic
+            if code == 0:
+                break
+
+        if last_code == 0:
             success += 1
-            if semantic == "no_data_found":
+            if last_semantic == "no_data_found":
                 no_data_found += 1
-            elif semantic in {"unreadable_pdf", "empty_text"}:
+            elif last_semantic in {"unreadable_pdf", "empty_text"}:
                 unreadable += 1
+            _append_task_manifest_row(manifest_path, {
+                "run_started_utc": run_started.isoformat(),
+                "bbl": bbl,
+                "stmt_date": stmt_date,
+                "year": year,
+                "attempt": attempt,
+                "result_code": 0,
+                "semantic_status": last_semantic,
+                "status_label": "success",
+                "error_note": "",
+            })
         else:
             failed += 1
+            _append_task_manifest_row(manifest_path, {
+                "run_started_utc": run_started.isoformat(),
+                "bbl": bbl,
+                "stmt_date": stmt_date,
+                "year": year,
+                "attempt": attempt,
+                "result_code": last_code,
+                "semantic_status": last_semantic,
+                "status_label": "failed",
+                "error_note": f"code={last_code}, semantic={last_semantic}",
+            })
 
     run_ended = datetime.now(timezone.utc)
 
@@ -381,14 +337,99 @@ def scrape_bbl_batch(
     typer.echo(f"  └─ unreadable/empty:{unreadable}")
     typer.echo(f"Skipped:    {skipped}")
     typer.echo(f"Failed:     {failed}")
+    typer.echo(f"Manifest:   {manifest_path}")
 
     raise typer.Exit(code=1 if failed > 0 else 0)
 
 
-@app.command("parse-nopv")
-def parse_nopv_cmd(
-    pdf_path_arg: str = typer.Option(..., "--pdf-path", help="Path to one downloaded NOPV PDF"),
+@app.command("retry-failures")
+def retry_failures(
+    manifest_csv: str = typer.Option("data/processed/task_status.csv", "--manifest-csv"),
+    headed: bool = typer.Option(True, "--headed/--no-headed"),
+    force: bool = typer.Option(False, "--force/--no-force"),
+    interactive_wait_ms: int = typer.Option(30_000, "--interactive-wait-ms"),
+    max_retries: int = typer.Option(2, "--max-retries"),
 ) -> None:
+    manifest_path = Path(manifest_csv)
+    if not manifest_path.exists():
+        typer.secho(f"❌ Manifest not found: {manifest_path}", fg=typer.colors.RED)
+        raise typer.Exit(code=2)
+
+    rows = list(csv.DictReader(manifest_path.open("r", encoding="utf-8", newline="")))
+    failed_tasks = []
+    for r in rows:
+        if r.get("status_label") == "failed":
+            failed_tasks.append((r["bbl"], r["stmt_date"], int(r["year"])))
+
+    seen = set()
+    unique_failed = []
+    for t in failed_tasks:
+        if t not in seen:
+            seen.add(t)
+            unique_failed.append(t)
+
+    if not unique_failed:
+        typer.secho("✅ No failed tasks to retry.", fg=typer.colors.GREEN)
+        raise typer.Exit(code=0)
+
+    typer.secho(f"Retrying {len(unique_failed)} failed tasks", fg=typer.colors.YELLOW)
+    success = failed = 0
+    run_started = datetime.now(timezone.utc)
+
+    for idx, (bbl, stmt_date, year) in enumerate(unique_failed, start=1):
+        typer.echo(f"[retry {idx}/{len(unique_failed)}] {bbl} {stmt_date}")
+        last_code = 1
+        last_semantic = "not_downloaded"
+
+        for attempt in range(1, max_retries + 2):
+            code, semantic = _scrape_one(
+                bbl=bbl,
+                stmt_date=stmt_date,
+                headed=headed,
+                force=force,
+                interactive_wait_ms=interactive_wait_ms,
+                print_plan=False,
+            )
+            last_code = code
+            last_semantic = semantic
+            if code == 0:
+                break
+
+        if last_code == 0:
+            success += 1
+            _append_task_manifest_row(manifest_path, {
+                "run_started_utc": run_started.isoformat(),
+                "bbl": bbl,
+                "stmt_date": stmt_date,
+                "year": year,
+                "attempt": attempt,
+                "result_code": 0,
+                "semantic_status": last_semantic,
+                "status_label": "retry_success",
+                "error_note": "",
+            })
+        else:
+            failed += 1
+            _append_task_manifest_row(manifest_path, {
+                "run_started_utc": run_started.isoformat(),
+                "bbl": bbl,
+                "stmt_date": stmt_date,
+                "year": year,
+                "attempt": attempt,
+                "result_code": last_code,
+                "semantic_status": last_semantic,
+                "status_label": "retry_failed",
+                "error_note": f"code={last_code}, semantic={last_semantic}",
+            })
+
+    typer.secho("Retry run complete", fg=typer.colors.GREEN)
+    typer.echo(f"retry_success={success}")
+    typer.echo(f"retry_failed={failed}")
+    raise typer.Exit(code=1 if failed > 0 else 0)
+
+
+@app.command("parse-nopv")
+def parse_nopv_cmd(pdf_path_arg: str = typer.Option(..., "--pdf-path")) -> None:
     p = Path(pdf_path_arg)
     if not p.exists():
         typer.secho(f"❌ File not found: {p}", fg=typer.colors.RED)
@@ -477,8 +518,6 @@ def build_dataset_csv(
     out_path = Path(out_csv)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    rows: List[Dict[str, Any]] = []
-
     def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
         if not path.exists():
             return []
@@ -489,18 +528,11 @@ def build_dataset_csv(
                 out.append(json.loads(line))
         return out
 
-    recs = _load_jsonl(records_path)
-    nods = _load_jsonl(no_data_path)
-
-    rows.extend(recs)
-    rows.extend(nods)
-
-    # Normalize/derive tax_year
+    rows = _load_jsonl(records_path) + _load_jsonl(no_data_path)
     for r in rows:
         sd = str(r.get("stmt_date") or "")
         r["tax_year"] = int(sd[:4]) if len(sd) >= 4 and sd[:4].isdigit() else None
 
-    # clean financial CSV columns
     cols = [
         "bbl", "tax_year", "stmt_date", "semantic_status", "parse_status",
         "market_value", "assessed_value", "taxable_value", "estimated_property_tax",

@@ -20,21 +20,13 @@ class BrowserFetchResult:
 def is_valid_pdf_payload(body: bytes, content_type: str) -> bool:
     if not body:
         return False
-
     head = body[:300].lower()
     if head.startswith(b"<!doctype") or head.startswith(b"<html"):
         return False
-
-    # guardrail: challenge/error pages are usually tiny
     if len(body) < 10_000:
         return False
-
     ct = (content_type or "").lower()
-    if body.startswith(b"%PDF"):
-        return True
-    if "application/pdf" in ct:
-        return True
-    return False
+    return body.startswith(b"%PDF") or ("application/pdf" in ct)
 
 
 def fetch_pdf_via_browser(
@@ -46,11 +38,7 @@ def fetch_pdf_via_browser(
     save_storage_state: bool = True,
 ) -> BrowserFetchResult:
     """
-    Browser fetch strategy:
-    - Navigate to URL
-    - Allow manual challenge completion (headed mode)
-    - Capture first valid PDF response from network
-    - Strictly validate payload so HTML is never saved as PDF
+    Browser fetch with session persistence and human-in-the-loop challenge handling.
     """
     state_path = Path(storage_state_path)
     state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -81,7 +69,6 @@ def fetch_pdf_via_browser(
                     captured_ct = ct
                     captured_url = resp.url
             except Exception:
-                # Ignore noisy response-read failures
                 pass
 
         page.on("response", on_response)
@@ -94,7 +81,7 @@ def fetch_pdf_via_browser(
             browser.close()
             return BrowserFetchResult(ok=False, reason="timeout_navigating")
 
-        # Check main response first
+        # Main response itself could be PDF
         if main_resp is not None:
             try:
                 ct = main_resp.headers.get("content-type", "")
@@ -113,10 +100,9 @@ def fetch_pdf_via_browser(
             except Exception:
                 pass
 
-        # Give user time to pass challenge if needed
+        # Give user chance to pass challenge!
         page.wait_for_timeout(interactive_wait_ms)
 
-        # If captured via network listener, return it
         if captured_pdf is not None:
             if save_storage_state:
                 context.storage_state(path=str(state_path))
@@ -129,7 +115,7 @@ def fetch_pdf_via_browser(
                 pdf_bytes=captured_pdf,
             )
 
-        # Last chance: try current URL as a direct browser-context request
+        # Last chance: request final URL directly from context
         final_url = page.url
         try:
             resp = context.request.get(final_url, timeout=timeout_ms)
