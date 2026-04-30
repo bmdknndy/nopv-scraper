@@ -187,3 +187,4 @@ __pycache__/
 data/raw/
 playwright/.cache/
 .pytest_cache/
+.ven_clean/
