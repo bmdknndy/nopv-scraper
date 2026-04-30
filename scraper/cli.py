@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Tuple
 
 import typer
 
-from scraper.fetch.browser_gate3 import fetch_pdf_via_browser, is_valid_pdf_payload
+from scraper.fetch.browser_gate3 import fetch_pdf_via_browser, is_valid_pdf_payload, check_2captcha_balance
 from scraper.fetch.direct_http import fetch_pdf_direct
 from scraper.parse.nopv_extract import parse_nopv_pdf, record_to_dict
 from scraper.parse.pdf_classify import classify_pdf
@@ -249,6 +249,9 @@ def scrape_bbl_batch(
     typer.secho(f"BBL count: {len(bbls)}", fg=typer.colors.GREEN)
     typer.secho(f"Expanded tasks: {len(tasks)}", fg=typer.colors.GREEN)
     typer.echo(f"Year range: {year_start}-{year_end}")
+
+    # Pre-flight: check 2Captcha balance (warns if low, never raises)
+    check_2captcha_balance()
 
     success = failed = skipped = no_data_found = unreadable = 0
     run_started = datetime.now(timezone.utc)

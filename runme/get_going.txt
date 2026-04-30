@@ -5,6 +5,14 @@ ls
 
 source .venv_clean/bin/activate
 
+export TWOCAPTCHA_API_KEY="970b67947b234e6cead4516975c603eb"
+
+echo $TWOCAPTCHA_API_KEY 
+
+which python 
+
+pip show 2captcha-python
+
 python -m scraper.cli --help
 
 python -m scraper.cli scrape-bbl-batch --help
