@@ -20,9 +20,11 @@ from scraper.url_builder import build_nopv_url_plan
 
 app = typer.Typer(help="NYC DOF NOPV scraper v2 CLI", no_args_is_help=True)
 
-DEFAULT_YEAR_START = 2017
+DEFAULT_YEAR_START = 2015
 DEFAULT_YEAR_END = 2026
 YEAR_TO_STMT_DATE = {
+    2015: "20150115",
+    2016: "20160115",
     2017: "20170115",
     2018: "20180115",
     2019: "20190115",
