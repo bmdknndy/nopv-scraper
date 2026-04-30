@@ -182,7 +182,7 @@ cython_debug/
 
 # Data
 data/raw/
-runme/get_going.txt
+runme/get_going.txt/
 
 # venv
 .venv/
