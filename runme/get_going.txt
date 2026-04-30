@@ -5,7 +5,7 @@ ls
 
 source .venv_clean/bin/activate
 
-export TWOCAPTCHA_API_KEY="970b67947b234e6cead4516975c603eb"
+export TWOCAPTCHA_API_KEY="7d56c975ae71a25fe7a6ea8ce7c95997"
 
 echo $TWOCAPTCHA_API_KEY 
 

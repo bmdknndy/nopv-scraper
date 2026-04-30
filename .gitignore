@@ -180,11 +180,17 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
-# Etc
+# Data
+data/raw/
+runme/get_going.txt
+
+# venv
 .venv/
+.venv_clean/
+
+# Etc.
 __pycache__/
 *.pyc
-data/raw/
 playwright/.cache/
 .pytest_cache/
-.ven_clean/
+
