@@ -188,13 +188,6 @@ runme/
 .venv/
 .venv_clean/
 
-# Etc.
-__pycache__/
-*.pyc
-playwright/.cache/
-.pytest_cache/
-
-
 # secrets
 .env
 *.env
@@ -206,3 +199,10 @@ archive/
 # .sh cli runners
 run_batch.sh
 run_finalize.sh
+
+# Etc.
+__pycache__/
+*.pyc
+playwright/.cache/
+.pytest_cache/
+.claude/
