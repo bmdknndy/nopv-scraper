@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Set, Tuple
 
 import typer
 
-from scraper.fetch.browser_gate3 import fetch_pdf_via_browser, is_valid_pdf_payload, check_2captcha_balance
+from scraper.fetch.browser_gate import fetch_pdf_via_browser, is_valid_pdf_payload, check_2captcha_balance
 from scraper.fetch.direct_http import fetch_pdf_direct
 from scraper.parse.nopv_extract import parse_nopv_pdf, record_to_dict
 from scraper.parse.pdf_classify import classify_pdf
@@ -20,9 +20,14 @@ from scraper.url_builder import build_nopv_url_plan
 
 app = typer.Typer(help="NYC DOF NOPV scraper v2 CLI", no_args_is_help=True)
 
-DEFAULT_YEAR_START = 2015
+DEFAULT_YEAR_START = 2010
 DEFAULT_YEAR_END = 2026
 YEAR_TO_STMT_DATE = {
+    2010: "20100115",
+    2011: "20110115",
+    2012: "20120115",
+    2013: "20130115",
+    2014: "20140115",
     2015: "20150115",
     2016: "20160115",
     2017: "20170115",

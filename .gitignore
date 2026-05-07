@@ -181,7 +181,7 @@ cython_debug/
 .cursorindexingignore
 
 # Data
-data/raw/
+data/
 runme/
 
 # venv
@@ -195,7 +195,14 @@ playwright/.cache/
 .pytest_cache/
 
 
-# Secrets — never commit
+# secrets
 .env
 *.env
 set_env.sh 
+
+# archive
+archive/
+
+# .sh cli runners
+run_batch.sh
+run_finalize.sh
