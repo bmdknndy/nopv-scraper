@@ -1,5 +1,6 @@
 ##### browser_gate.py #####
 ##### brdyknndy #####
+
 from __future__ import annotations
 
 import os
@@ -45,25 +46,24 @@ def check_2captcha_balance(warn_below: float = 1.0) -> Optional[float]:
     """
     Returns current 2Captcha account balance in USD, or None if unavailable.
     Prints a warning if balance is below `warn_below` (default $1.00).
-    Safe to call before a batch run; never raises.
     """
     api_key = os.environ.get("TWOCAPTCHA_API_KEY")
     if not api_key:
-        print("ℹ️  2Captcha: TWOCAPTCHA_API_KEY not set — auto-solve disabled.")
+        print(" 2Captcha: TWOCAPTCHA_API_KEY not set — auto-solve disabled.")
         return None
     if not _TWOCAPTCHA_AVAILABLE:
-        print("ℹ️  2Captcha: twocaptcha package not installed — auto-solve disabled.")
+        print(" 2Captcha: twocaptcha package not installed — auto-solve disabled.")
         return None
     try:
         solver = TwoCaptcha(api_key)
         balance = float(solver.balance())
         if balance < warn_below:
-            print(f"⚠️  2Captcha balance is LOW: ${balance:.4f}. Top up before scaling.")
+            print(f" 2Captcha balance is LOW: ${balance:.4f}. Top up before scaling.")
         else:
-            print(f"✓ 2Captcha balance: ${balance:.4f}")
+            print(f" 2Captcha balance: ${balance:.4f}")
         return balance
     except Exception as e:
-        print(f"ℹ️  2Captcha balance check failed (continuing anyway): {e}")
+        print(f" 2Captcha balance check failed (continuing anyway): {e}")
         return None
 
 
@@ -74,10 +74,10 @@ def _try_solve_recaptcha_via_2captcha(page, page_url: str) -> bool:
     """
     api_key = os.environ.get("TWOCAPTCHA_API_KEY")
     if not api_key:
-        print("  → TWOCAPTCHA_API_KEY not set — skipping auto-solve.")
+        print("   TWOCAPTCHA_API_KEY not set — skipping auto-solve.")
         return False
     if not _TWOCAPTCHA_AVAILABLE:
-        print("  → 2captcha-python not installed — skipping auto-solve.")
+        print("   2captcha-python not installed — skipping auto-solve.")
         return False
 
     # 1. Find the data-sitekey on the page
@@ -89,14 +89,14 @@ def _try_solve_recaptcha_via_2captcha(page, page_url: str) -> bool:
             }
         """)
     except Exception as e:
-        print(f"  ✗ Could not extract sitekey: {e}")
+        print(f"   Could not extract sitekey: {e}")
         return False
 
     if not sitekey:
-        print("  → No data-sitekey on page — not a reCAPTCHA v2 challenge.")
+        print("   No data-sitekey on page — not a reCAPTCHA v2 challenge.")
         return False
 
-    print(f"  → Found sitekey {sitekey[:20]}... Submitting to 2Captcha...")
+    print(f"   Found sitekey {sitekey[:20]}... Submitting to 2Captcha...")
 
     # 2. Send to 2Captcha and wait for token
     try:
@@ -104,11 +104,11 @@ def _try_solve_recaptcha_via_2captcha(page, page_url: str) -> bool:
         result = solver.recaptcha(sitekey=sitekey, url=page_url)
         token = result.get("code")
         if not token:
-            print(f"  ✗ 2Captcha returned no token: {result}")
+            print(f"   2Captcha returned no token: {result}")
             return False
-        print(f"  ✓ Token received (length {len(token)}). Injecting...")
+        print(f"   Token received (length {len(token)}). Injecting...")
     except Exception as e:
-        print(f"  ✗ 2Captcha API error: {e}")
+        print(f"   2Captcha API error: {e}")
         return False
 
     # 3. Inject the token into the hidden response field
@@ -123,7 +123,7 @@ def _try_solve_recaptcha_via_2captcha(page, page_url: str) -> bool:
             }}
         """)
     except Exception as e:
-        print(f"  ✗ Could not inject token: {e}")
+        print(f"   Could not inject token: {e}")
         return False
 
     # 4. Submit the form
@@ -133,7 +133,7 @@ def _try_solve_recaptcha_via_2captcha(page, page_url: str) -> bool:
         ).first
         if submit_btn.is_visible(timeout=2_000):
             submit_btn.click()
-            print("  ✓ Submit clicked. Watching for PDF response...")
+            print("   Submit clicked. Watching for PDF response...")
             return True
         # No visible submit button — try submitting the form via JS
         page.evaluate("""
@@ -142,10 +142,10 @@ def _try_solve_recaptcha_via_2captcha(page, page_url: str) -> bool:
                 if (form) form.submit();
             }
         """)
-        print("  ✓ Form submitted via JS.")
+        print("   Form submitted via JS.")
         return True
     except Exception as e:
-        print(f"  ✗ Submit failed: {e}")
+        print(f"   Submit failed: {e}")
         return False
 
 
@@ -188,7 +188,7 @@ def fetch_pdf_via_browser(
                     captured_pdf = body
                     captured_ct = ct
                     captured_url = resp.url
-                    print(f"  ✓ PDF captured: {len(body):,} bytes")
+                    print(f"   PDF captured: {len(body):,} bytes")
             except Exception as e:
                 print(f"  ! Failed to read PDF body: {e}")
 
@@ -207,15 +207,15 @@ def fetch_pdf_via_browser(
                 pass
             return result
 
-        # ── Navigate ──────────────────────────────────────────────────────────
-        print(f"  → Navigating to: {url}")
+        # Navigate to...
+        print(f"  Navigating to: {url}")
         try:
             main_resp = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
         except PlaywrightTimeoutError:
-            print("  ✗ Timed out during navigation.")
+            print("   Timed out during navigation.")
             return _save_and_close(BrowserFetchResult(ok=False, reason="timeout_navigating"))
         except Exception as e:
-            print(f"  ✗ Navigation failed: {e}")
+            print(f"   Navigation failed: {e}")
             return _save_and_close(BrowserFetchResult(ok=False, reason="navigation_error"))
         
 
@@ -224,7 +224,7 @@ def fetch_pdf_via_browser(
                 ct = main_resp.headers.get("content-type", "")
                 body = main_resp.body()
                 if is_valid_pdf_payload(body, ct):
-                    print("  ✓ PDF found in main navigation response.")
+                    print("   PDF found in main navigation response.")
                     return _save_and_close(BrowserFetchResult(
                         ok=True, reason="ok_main_response",
                         final_url=main_resp.url, content_type=ct, pdf_bytes=body,
@@ -240,11 +240,11 @@ def fetch_pdf_via_browser(
 
         # ── Poll for PDF (covers both auto-solve success and manual fallback) ─
         secs = interactive_wait_ms // 1000
-        print(f"  → Polling up to {secs}s for PDF (manual solve possible if auto failed)...")
+        print(f"  Polling up to {secs}s for PDF (manual solve possible if auto failed)...")
         elapsed = 0
         while elapsed < interactive_wait_ms:
             if captured_pdf is not None:
-                print(f"  ✓ PDF captured after ~{elapsed // 1000}s.")
+                print(f"  PDF captured after ~{elapsed // 1000}s.")
                 break
             try:
                 page.wait_for_timeout(_POLL_INTERVAL_MS)
@@ -265,22 +265,22 @@ def fetch_pdf_via_browser(
                 final_url = page.url
             except Exception:
                 final_url = url
-            print(f"  → No PDF via listener. Trying direct request: {final_url}")
+            print(f"   No PDF via listener. Trying direct request: {final_url}")
             try:
                 resp = context.request.get(final_url, timeout=timeout_ms)
                 ct = resp.headers.get("content-type", "")
                 body = resp.body()
                 print(f"     status={resp.status}, content-type={ct}, size={len(body)}")
                 if is_valid_pdf_payload(body, ct):
-                    print("  ✓ PDF retrieved via direct context request.")
+                    print("   PDF retrieved via direct context request.")
                     return _save_and_close(BrowserFetchResult(
                         ok=True, reason="ok_context_request_final_url",
                         final_url=final_url, content_type=ct, pdf_bytes=body,
                     ))
             except Exception as e:
-                print(f"  ✗ Direct request failed: {e}")
+                print(f"   Direct request failed: {e}")
 
-        print("  ✗ All strategies exhausted.")
+        print("   All strategies exhausted.")
         return _save_and_close(BrowserFetchResult(
             ok=False, reason="no_valid_pdf_captured",
             final_url=(page.url if not page_closed else url),
