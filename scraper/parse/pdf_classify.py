@@ -1,3 +1,7 @@
+##### pdf_classify.py #####
+##### brdyknndy #####
+
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -88,7 +92,7 @@ def classify_pdf(path: Path) -> PDFClassification:
     elif len(matched_nopv) >= 2:
         status = "valid_statement"
     else:
-        # still parseable, but uncertain
+        # still parseable, but uncertain...
         status = "valid_statement"
 
     return PDFClassification(

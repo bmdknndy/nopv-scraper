@@ -1,3 +1,7 @@
+##### cli.py #####
+##### brdyknndy #####
+
+
 from __future__ import annotations
 
 import csv
@@ -296,7 +300,7 @@ def scrape_bbl_batch(
 
     manifest_path = Path(manifest_csv)
 
-    # Optionally read prior completions for --resume BEFORE archiving
+    # Optionally read prior completions for --resume BEFORE archiving!
     completed_keys: Set[Tuple[str, str]] = set()
     if resume:
         completed_keys = _read_completed_tasks_from_manifest(manifest_path)
@@ -311,7 +315,7 @@ def scrape_bbl_batch(
     typer.secho(f"Expanded tasks: {len(tasks)}", fg=typer.colors.GREEN)
     typer.echo(f"Year range: {year_start}-{year_end}")
 
-    # Pre-flight: check 2Captcha balance
+    # Check 2Captcha balance
     balance_start = check_2captcha_balance()
 
     success = failed = skipped = no_data_found = unreadable = resumed = 0
@@ -321,7 +325,7 @@ def scrape_bbl_batch(
         typer.echo("\n" + "=" * 72)
         typer.echo(f"[{idx}/{len(tasks)}] bbl={bbl} year={year} stmt_date={stmt_date}")
 
-        # Resume: skip if already completed in a prior run
+        # Resume: skip if already completed in a prior run....
         if resume and (bbl, stmt_date) in completed_keys:
             resumed += 1
             typer.echo("↻ Already completed in a prior run. Skipping.")
@@ -397,7 +401,7 @@ def scrape_bbl_batch(
                 "error_note": f"code={last_code}, semantic={last_semantic}",
             })
 
-        # Throttle between tasks if requested
+        # Throttle between tasks (if requested)
         if throttle_ms > 0 and idx < len(tasks):
             time.sleep(throttle_ms / 1000.0)
 
@@ -418,7 +422,7 @@ def scrape_bbl_batch(
     typer.echo(f"Failed:         {failed}")
     typer.echo(f"Manifest:       {manifest_path}")
 
-    # End-of-run balance check (so you can see what was spent)
+    # End-of-run balance check
     balance_end = check_2captcha_balance()
     if balance_start is not None and balance_end is not None:
         spent = balance_start - balance_end
@@ -454,7 +458,7 @@ def retry_failures(
             unique_failed.append(t)
 
     if not unique_failed:
-        typer.secho("✅ No failed tasks to retry.", fg=typer.colors.GREEN)
+        typer.secho("No failed tasks to retry.", fg=typer.colors.GREEN)
         raise typer.Exit(code=0)
 
     typer.secho(f"Retrying {len(unique_failed)} failed tasks", fg=typer.colors.YELLOW)
@@ -517,7 +521,7 @@ def retry_failures(
 def parse_nopv_cmd(pdf_path_arg: str = typer.Option(..., "--pdf-path")) -> None:
     p = Path(pdf_path_arg)
     if not p.exists():
-        typer.secho(f"❌ File not found: {p}", fg=typer.colors.RED)
+        typer.secho(f"File not found: {p}", fg=typer.colors.RED)
         raise typer.Exit(code=2)
 
     record = parse_nopv_pdf(p)
@@ -548,7 +552,7 @@ def parse_batch_cmd(
         all_pdfs = all_pdfs[:limit]
 
     if not all_pdfs:
-        typer.secho("⚠️ No PDF files found to parse.", fg=typer.colors.YELLOW)
+        typer.secho("No PDF files found to parse.", fg=typer.colors.YELLOW)
         raise typer.Exit(code=0)
 
     records_file = out / "nopv_records.jsonl"
@@ -636,7 +640,7 @@ def build_dataset_csv(
         for r in rows:
             w.writerow({c: r.get(c) for c in cols})
 
-    typer.secho(f"✅ Wrote dataset CSV: {out_path}", fg=typer.colors.GREEN)
+    typer.secho(f"Wrote dataset CSV: {out_path}", fg=typer.colors.GREEN)
     typer.echo(f"Rows: {len(rows)}")
 
 

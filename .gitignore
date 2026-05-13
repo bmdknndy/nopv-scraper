@@ -206,3 +206,5 @@ __pycache__/
 playwright/.cache/
 .pytest_cache/
 .claude/
+state/
+.DS_Store
