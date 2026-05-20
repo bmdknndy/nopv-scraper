@@ -67,13 +67,13 @@ python -m scraper.cli build-dataset-csv
 ---
 
 ## Outputs
-
-`data/raw/<bbl>/<date>_NPV.pdf` = Raw PDF for each BBL/year 
-`data/raw/<bbl>/<date>_NPV.meta.json` = Fetch metadata (strategy used, status, URL) 
-`data/processed/nopv_records.jsonl` = Parsed financial records 
-`data/processed/nopv_no_data_found.jsonl` = BBL/years with no statement on file 
-`data/processed/nopv_financials.csv` = Final merged dataset 
-
+```
+`data/raw/<bbl>/<date>_NPV.pdf` # Raw PDF for each BBL/year 
+`data/raw/<bbl>/<date>_NPV.meta.json` # Fetch metadata (strategy used, status, URL) 
+`data/processed/nopv_records.jsonl` # Parsed financial records 
+`data/processed/nopv_no_data_found.jsonl` # BBL/years with no statement on file 
+`data/processed/nopv_financials.csv` # Final merged dataset 
+```
 ---
 
 ## Project structure
