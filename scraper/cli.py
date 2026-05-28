@@ -114,9 +114,9 @@ def _archive_manifest_if_exists(manifest_path: Path) -> None:
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         archived = manifest_path.with_name(f"{manifest_path.stem}_{ts}{manifest_path.suffix}")
         shutil.move(str(manifest_path), str(archived))
-        typer.secho(f"📦 Archived prior manifest → {archived.name}", fg=typer.colors.CYAN)
+        typer.secho(f" Archived prior manifest → {archived.name}", fg=typer.colors.CYAN)
     except Exception as e:
-        typer.secho(f"⚠️  Could not archive prior manifest ({e}); will append instead.", fg=typer.colors.YELLOW)
+        typer.secho(f"  Could not archive prior manifest ({e}); will append instead.", fg=typer.colors.YELLOW)
 
 
 def _read_completed_tasks_from_manifest(manifest_path: Path) -> Set[Tuple[str, str]]:
@@ -136,21 +136,21 @@ def _read_completed_tasks_from_manifest(manifest_path: Path) -> Set[Tuple[str, s
                     if bbl and sd:
                         completed.add((bbl, sd))
     except Exception as e:
-        typer.secho(f"⚠️  Could not read manifest for resume ({e}); proceeding without resume.", fg=typer.colors.YELLOW)
+        typer.secho(f"  Could not read manifest for resume ({e}); proceeding without resume.", fg=typer.colors.YELLOW)
         return set()
     return completed
 
 
 @app.command("hello")
 def hello() -> None:
-    typer.echo("NOPV scraper v2 is set up.")
+    typer.echo("NOPV scraper v2 is set up !!!! :)")
 
 
 @app.command("verify-pdf")
 def verify_pdf(path: str = typer.Option(..., "--path")) -> None:
     p = Path(path)
     if not p.exists():
-        typer.secho(f"❌ File not found: {p}", fg=typer.colors.RED)
+        typer.secho(f" File not found: {p}", fg=typer.colors.RED)
         raise typer.Exit(code=2)
 
     b = p.read_bytes()
@@ -371,7 +371,7 @@ def scrape_bbl_batch(
             if code == 0:
                 break
         task_elapsed = time.time() - task_start
-        typer.echo(f"  ⏱  Task time: {task_elapsed:.1f}s")
+        typer.echo(f"  Task time: {task_elapsed:.1f}s")
 
         if last_code == 0:
             success += 1
@@ -444,7 +444,7 @@ def retry_failures(
 ) -> None:
     manifest_path = Path(manifest_csv)
     if not manifest_path.exists():
-        typer.secho(f"❌ Manifest not found: {manifest_path}", fg=typer.colors.RED)
+        typer.secho(f" Manifest not found: {manifest_path}", fg=typer.colors.RED)
         raise typer.Exit(code=2)
 
     rows = list(csv.DictReader(manifest_path.open("r", encoding="utf-8", newline="")))
