@@ -4,6 +4,8 @@ A Python CLI tool for scraping NYC Department of Finance "Notice of Property Val
 
 Built to handle the DOF's CAPTCHA-gated document portal. Works by trying a fast direct HTTP request first, then falling back to a headed Playwright browser session with optional 2Captcha auto-solve if a challenge appears.
 
+This is an improved version of the web scraper used for my Sociology MA thesis at Columbia on the effect of gentrification on the rent-regulated housing stock in NYC. The version in this repo has been reworked to provide clean and consistent extraction of financial values from NOPV pdf's, which are not currently publicly available at the building level, rather than extracting counts of rent-regulated units, which are currently available from other sources (see ANHD or the nycdb py package).
+
 ---
 
 ## What it does
